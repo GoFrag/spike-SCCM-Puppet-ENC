@@ -1,0 +1,3 @@
+https://gist.github.com/wagnerandrade/5424431
+
+https://docs.puppet.com/guides/external_nodes.html

@@ -1,0 +1,13 @@
+http://www.craigdunn.org/2012/05/239/
+
+
+sccm-demo
+
+select
+v_FullCollectionMembership.CollectionID As 'Collection ID',
+v_Collection.Name As 'Collection Name',
+v_R_System.Name0 As 'Machine Name'
+FROM v_FullCollectionMembership 
+JOIN v_R_System on v_FullCollectionMembership.ResourceID = v_R_System.ResourceID 
+JOIN v_Collection on v_FullCollectionMembership.CollectionID = v_Collection.CollectionID 
+WHERE v_R_System.Name0='WINDOWS001'
