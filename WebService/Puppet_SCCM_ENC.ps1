@@ -1,21 +1,26 @@
 [cmdletBinding(SupportsShouldProcess=$false,ConfirmImpact='Low')]
 param(
   [Parameter(Mandatory=$false,ValueFromPipeline=$true)]
-  $HTTPEndPoint = 'http://localhost:8080/'
+  $HTTPEndPoint = 'http://*:8080/'
 )
 
 $ErrorActionPreference = 'Stop'
 $VerbosePreference = 'Continue'
 
+# SCCM Info
+$ConfigMgrSite = 'CEN'
 # SCCM Database Settings
+# TODO Find the DB Server and Name in the SCCM Config
 $DatabaseServer = '10.32.175.90'
-$DatabaseName = 'CM_CEN'
+$DatabaseName = "CM_$ConfigMgrSite"
 $DatabaseUsername = 'sa'
 $DatabasePassword = 'Puppet01!'
 # SCCM Collection Settings
 $EnvironmentCollectionPrefix = 'Puppet::Environment::'
 $RoleCollectionPrefix = 'Puppet::Role::'
 $ProfileCollectionPrefix = 'Puppet::Profile::'
+# Configuration
+$HostnameRegex = '^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$'
 
 function Get-MSSQLQuery {
   [cmdletBinding(SupportsShouldProcess=$false,ConfirmImpact='Low')]
@@ -111,6 +116,20 @@ function Confirm-DBConnectivity() {
   }
 }
 
+function Get-CollectionVariables($CollectionName) {
+  $varList = @{}
+  
+  'PuppetClasses','PuppetVariables' | % { 
+    $VarName = $_
+    $VarResultObject = Get-CMDeviceCollectionVariable -CollectionName $CollectionName -VariableName $VarName -Verbose:$false -ErrorAction SilentlyContinue
+    
+    if ($VarResultObject -ne $null) {
+      $varList.Add($VarName,$VarResultObject.Value)
+    }
+  }
+  return $varList
+}
+
 function Get-NodeResponse($NodeName) {
   try
   {
@@ -130,6 +149,7 @@ function Get-NodeResponse($NodeName) {
     $nodeEnv = ''
     $nodeProfiles = @{}
     $nodeRoles = @{}
+    $collVariables = @{}
     
     $dbResult = Get-MSSQLQuery -ConnectionObject $sqlConn -Query $query
 
@@ -141,16 +161,19 @@ function Get-NodeResponse($NodeName) {
       if ($collName.StartsWith($EnvironmentCollectionPrefix)) {
         Write-Verbose "Found Environment collection $collName"
         $nodeEnv = $collName.SubString($EnvironmentCollectionPrefix.Length)
+        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
       # Role type collection
       if ($collName.StartsWith($RoleCollectionPrefix)) {
         Write-Verbose "Found Role collection $collName"
         $nodeRoles.Add($collID,$collName)
+        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
       # Profile type collection
       if ($collName.StartsWith($ProfileCollectionPrefix)) {
         Write-Verbose "Found Profile collection $collName"
         $nodeProfiles.Add($collID,$collName)
+        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
     }
     
@@ -159,8 +182,21 @@ function Get-NodeResponse($NodeName) {
       return ""
     }
     
+    # Get the Class List
+    $Classes = @()
+    $nodeProfiles.GetEnumerator() | % {
+      $CollName = $_.Value
+      $collVariables[$CollName]["PuppetClasses"] -split ';' | % {
+        $ClassName = $_.Trim()
+        if ( ($ClassName -ne '') -and ($Classes -notcontains $ClassName) ) { $Classes += $ClassName }
+      }
+    }
+     
+    # Generate Response
     $response = "---`nclasses:`n"
-    
+    $Classes | % {
+      $response += "    $($_):`n"
+    }
     $response += "environment: $nodeEnv`n"
   
     Write-Output $response  
@@ -193,43 +229,57 @@ If (-not (Confirm-DBConnectivity)) {
   throw "Error while connecting to the Database"
 }
 
-#Write-Host "Result: $(Get-NodeResponse -NodeName 'WINDOWS001.sccm-demo.local')" -ForegroundColor Cyan
+Write-Verbose "Importing Config. Mgr. Powershell Module..."
+Import-Module 'C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1' -Verbose:$false | Out-Null
 
-#throw "exiting"
+Write-Verbose "Connecting to SCCM..."
+Set-Location "$($ConfigMgrSite):" -ErrorAction 'Stop' | Out-Null
+Write-Verbose "Connected to SCCM"
+
+# Write-Host "Result:`n$(Get-NodeResponse -NodeName 'WINDOWS001.sccm-demo.local')" -ForegroundColor Cyan
+# throw "exiting"
 
 $url = $HTTPEndPoint
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add($url)
 $listener.Start()
 
-Write-Host "Listening at $url..."
+Write-Verbose "Listening at $url..."
 
 while ($listener.IsListening)
 {
-    $context = $listener.GetContext()
-    $requestUrl = $context.Request.Url
-    $response = $context.Response
 
-    Write-Verbose "> $requestUrl"
+  $context = $listener.GetContext()
+  $requestUrl = $context.Request.Url
+  $response = $context.Response
 
+  try {    
     $localPath = $requestUrl.LocalPath
     if ($localPath -eq '/kill') { $listener.Close(); break; }
-    
-    if ($localPath.StartsWith('/')) {
-      $computerName = $localPath.SubString(1)
-      
-      # TODO Add simple Computername verification
-      
-      $content = (Get-NodeResponse -NodeName $computerName)
-      $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
-      $response.ContentLength64 = $buffer.Length
-      $response.OutputStream.Write($buffer, 0, $buffer.Length)
+
+    # Example Node request URI for (hostname.domain.com);
+    #   http://10.1.1.1/hostname.domain.com    
+    if ($localPath.LastIndexOf('/') -eq 0) {
+      $computerName = $localPath.SubString(1).Trim()
+      if ($computerName -match $HostnameRegex) {
+        Write-Verbose "Request: NodeName = $computerName"
+        $content = (Get-NodeResponse -NodeName $computerName)
+        Write-Verbose "Response: $content"
+        $buffer = [System.Text.Encoding]::UTF8.GetBytes($content)
+        $response.ContentLength64 = $buffer.Length
+        $response.OutputStream.Write($buffer, 0, $buffer.Length)        
+      } else {
+        $response.StatusCode = 400
+      }
     } else {
       $response.StatusCode = 404
     }
-    
-    $response.Close()
+  } catch {
+    $response.StatusCode = 500
+  }
+  
+  $response.Close()
 
-    $responseStatus = $response.StatusCode
-    Write-Verbose "< $responseStatus"
+  # DEBUG
+  $listener.Close(); break;
 }

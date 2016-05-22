@@ -3,6 +3,8 @@ http://www.craigdunn.org/2012/05/239/
 
 sccm-demo
 
+v_RA_System_ResourceNames is the FQDN
+
 select
 v_FullCollectionMembership.CollectionID As 'Collection ID',
 v_Collection.Name As 'Collection Name',
