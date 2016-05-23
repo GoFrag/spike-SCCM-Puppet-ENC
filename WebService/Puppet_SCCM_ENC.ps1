@@ -19,6 +19,7 @@ $DatabasePassword = 'Puppet01!'
 $EnvironmentCollectionPrefix = 'Puppet::Environment::'
 $RoleCollectionPrefix = 'Puppet::Role::'
 $ProfileCollectionPrefix = 'Puppet::Profile::'
+$ClassCollectionPrefix = 'Puppet::Class::'
 # Configuration
 $HostnameRegex = '^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\-]*[A-Za-z0-9])$'
 
@@ -116,19 +117,19 @@ function Confirm-DBConnectivity() {
   }
 }
 
-function Get-CollectionVariables($CollectionName) {
-  $varList = @{}
+# function Get-CollectionVariables($CollectionName) {
+#   $varList = @{}
   
-  'PuppetClasses','PuppetVariables' | % { 
-    $VarName = $_
-    $VarResultObject = Get-CMDeviceCollectionVariable -CollectionName $CollectionName -VariableName $VarName -Verbose:$false -ErrorAction SilentlyContinue
+#   'PuppetClasses','PuppetVariables' | % { 
+#     $VarName = $_
+#     $VarResultObject = Get-CMDeviceCollectionVariable -CollectionName $CollectionName -VariableName $VarName -Verbose:$false -ErrorAction SilentlyContinue
     
-    if ($VarResultObject -ne $null) {
-      $varList.Add($VarName,$VarResultObject.Value)
-    }
-  }
-  return $varList
-}
+#     if ($VarResultObject -ne $null) {
+#       $varList.Add($VarName,$VarResultObject.Value)
+#     }
+#   }
+#   return $varList
+# }
 
 function Get-NodeResponse($NodeName) {
   try
@@ -149,7 +150,8 @@ function Get-NodeResponse($NodeName) {
     $nodeEnv = ''
     $nodeProfiles = @{}
     $nodeRoles = @{}
-    $collVariables = @{}
+    $nodeClasses = @{}
+    #$collVariables = @{}
     
     $dbResult = Get-MSSQLQuery -ConnectionObject $sqlConn -Query $query
 
@@ -161,19 +163,25 @@ function Get-NodeResponse($NodeName) {
       if ($collName.StartsWith($EnvironmentCollectionPrefix)) {
         Write-Verbose "Found Environment collection $collName"
         $nodeEnv = $collName.SubString($EnvironmentCollectionPrefix.Length)
-        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
+        # $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
       # Role type collection
       if ($collName.StartsWith($RoleCollectionPrefix)) {
         Write-Verbose "Found Role collection $collName"
         $nodeRoles.Add($collID,$collName)
-        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
+        # $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
       # Profile type collection
       if ($collName.StartsWith($ProfileCollectionPrefix)) {
         Write-Verbose "Found Profile collection $collName"
         $nodeProfiles.Add($collID,$collName)
-        $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
+        # $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
+      }
+      # Module type collection
+      if ($collName.StartsWith($ClassCollectionPrefix)) {
+        Write-Verbose "Found Class collection $collName"
+        $nodeClasses.Add($collID,$collName)
+        # $collVariables.Add($collName,( Get-CollectionVariables -CollectionName $collName )) | Out-Null
       }
     }
     
@@ -182,19 +190,19 @@ function Get-NodeResponse($NodeName) {
       return ""
     }
     
-    # Get the Class List
-    $Classes = @()
-    $nodeProfiles.GetEnumerator() | % {
-      $CollName = $_.Value
-      $collVariables[$CollName]["PuppetClasses"] -split ';' | % {
-        $ClassName = $_.Trim()
-        if ( ($ClassName -ne '') -and ($Classes -notcontains $ClassName) ) { $Classes += $ClassName }
-      }
+    If ($nodeRoles.Count -gt 1) {
+      Write-Verbose "Node is a member of more than one role"
+      return ""
     }
+    
+    # Get the Modules List
+    $ClassNames = $nodeClasses.GetEnumerator() | % {
+      Write-Output $_.Value.Substring($ClassCollectionPrefix.Length)
+    } | Select-Object -Unique
      
     # Generate Response
     $response = "---`nclasses:`n"
-    $Classes | % {
+    $ClassNames | % {
       $response += "    $($_):`n"
     }
     $response += "environment: $nodeEnv`n"
@@ -229,15 +237,15 @@ If (-not (Confirm-DBConnectivity)) {
   throw "Error while connecting to the Database"
 }
 
-Write-Verbose "Importing Config. Mgr. Powershell Module..."
-Import-Module 'C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1' -Verbose:$false | Out-Null
+# Write-Verbose "Importing Config. Mgr. Powershell Module..."
+# Import-Module 'C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\ConfigurationManager.psd1' -Verbose:$false | Out-Null
 
-Write-Verbose "Connecting to SCCM..."
-Set-Location "$($ConfigMgrSite):" -ErrorAction 'Stop' | Out-Null
-Write-Verbose "Connected to SCCM"
+# Write-Verbose "Connecting to SCCM..."
+# Set-Location "$($ConfigMgrSite):" -ErrorAction 'Stop' | Out-Null
+# Write-Verbose "Connected to SCCM"
 
-# Write-Host "Result:`n$(Get-NodeResponse -NodeName 'WINDOWS001.sccm-demo.local')" -ForegroundColor Cyan
-# throw "exiting"
+#Write-Host "Result:`n$(Get-NodeResponse -NodeName 'WINDOWS001.sccm-demo.local')" -ForegroundColor Cyan
+#throw "exiting"
 
 $url = $HTTPEndPoint
 $listener = New-Object System.Net.HttpListener

@@ -11,11 +11,13 @@ $puppetenc = (@"
     "environments_folder": "Puppet ENC\\Puppet Environments",
     "roles_folder": "Puppet ENC\\Puppet Roles",
     "profiles_folder": "Puppet ENC\\Puppet Profiles",
+    "classes_folder": "Puppet ENC\\Puppet Classes",
     "root_limiting_collection": "All Systems",
 
     "environments_collection_prefix": "Puppet::Environment::",
     "roles_collection_prefix": "Puppet::Role::",
-    "profiles_collection_prefix": "Puppet::Profile::"
+    "profiles_collection_prefix": "Puppet::Profile::",
+    "Classes_collection_prefix": "Puppet::Class::"
   },
   
   "environments": [ "production","test" ],
@@ -50,27 +52,29 @@ $puppetenc = (@"
   "profiles": [
     {
       "name": "IISWebServer",
-      "modules": [ ]
+      "classes": [ "custom::iis:base","custom::iis::no_default_website" ]
     },
     {
       "name": "ConsulAgent",
-      "modules": [ ]
+      "classes": [ "consul::agent" ]
     },
     {
       "name": "ConsulService",
-      "modules": [ ]
+      "classes": [ "consul::service" ]
     },
     {
       "name": "EventStoreService",
-      "modules": [ ]
+      "classes": [ "eventstore::service","custom::eventstore::base" ]
     },
     {
       "name": "HAProxyService",
-      "modules": [ ]
+      "classes": [ "haproxy" ]
     }
   ]
 }
 "@ | ConvertFrom-JSON -ErrorAction Stop)
+
+if ($puppetenc -eq $null) { Throw "Invalid JSON" }
 
 #+++++++++++++++++ DO STUFF!!
 
@@ -97,7 +101,7 @@ $puppetenc.environments | % {
   }
 }
 
-# Create the roles first
+# Create the roles
 $puppetenc.roles | % {
   $Role = $_.name
   $CollectionName = "$($puppetenc.config_mgr.roles_collection_prefix)$Role"
@@ -113,7 +117,7 @@ $puppetenc.roles | % {
   }
 }
 
-# Create the profiles second
+# Create the profiles
 $puppetenc.profiles | % {
   $PupProfile = $_.name
   $CollectionName = "$($puppetenc.config_mgr.profiles_collection_prefix)$PupProfile"
@@ -126,6 +130,22 @@ $puppetenc.profiles | % {
     $thisColl = New-CMDeviceCollection -Name $CollectionName -LimitingCollectionName $puppetenc.config_mgr.root_limiting_collection -RefreshType Periodic -RefreshSchedule $Schedule
     
     Move-CMObject -InputObject $thisColl -FolderPath "$sccmSite\DeviceCollection\$($puppetenc.config_mgr.profiles_folder)" | Out-Null    
+  }
+}
+
+# Generate the classes list
+$puppetenc.profiles | % { $_.classes | % { Write-Output $_ } } | Select -Unique | % {
+  $ClassName = $_
+  $CollectionName = "$($puppetenc.config_mgr.classes_collection_prefix)$ClassName"
+  
+  $thisColl = Get-CMDeviceCollection -Name $CollectionName
+  if ($thisColl -eq $null) {
+    Write-Host "Creating collection $CollectionName ..."
+
+    $Schedule = New-CMSchedule -Start (New-RandomSchedule) -RecurInterval Days -RecurCount 1    
+    $thisColl = New-CMDeviceCollection -Name $CollectionName -LimitingCollectionName $puppetenc.config_mgr.root_limiting_collection -RefreshType Periodic -RefreshSchedule $Schedule
+    
+    Move-CMObject -InputObject $thisColl -FolderPath "$sccmSite\DeviceCollection\$($puppetenc.config_mgr.classes_folder)" | Out-Null    
   }
 }
 
@@ -147,6 +167,26 @@ $puppetenc.roles | % {
     if ($includeRule -eq $null) {
       Write-Host "Adding $Role to $PupProfile"
       Add-CMDeviceCollectionIncludeMembershipRule -CollectionName $ProfileCollectionName -IncludeCollectionName $RoleCollectionName | Out-Null
+    }
+  }
+}
+
+$puppetenc.profiles | % {
+  $PupProfile = $_.name
+  $ProfileCollectionName = "$($puppetenc.config_mgr.profiles_collection_prefix)$PupProfile"
+  
+  $ProfileColl = Get-CMDeviceCollection -Name $CollectionName
+  if ($ProfileColl -eq $null) { throw "Missing Profile"}
+
+  $_.classes | % { 
+    $ClassName = $_
+    $ClassCollectionName = "$($puppetenc.config_mgr.classes_collection_prefix)$ClassName"
+
+    $includeRule = Get-CMDeviceCollectionIncludeMembershipRule -CollectionName $ClassCollectionName -IncludeCollectionName $ProfileCollectionName
+
+    if ($includeRule -eq $null) {
+      Write-Host "Adding $PupProfile to $ClassName"
+      Add-CMDeviceCollectionIncludeMembershipRule -CollectionName $ClassCollectionName -IncludeCollectionName $ProfileCollectionName | Out-Null
     }
   }
 }
